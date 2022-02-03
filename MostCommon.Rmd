@@ -1,0 +1,316 @@
+---
+title: "Most common species in Denmark"
+date: "2/3/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, error = FALSE, warning = FALSE, cache = T)
+
+library(tidyverse)
+library(data.table)
+library(janitor)
+library(DT)
+
+Artlist <- data.table::fread("artsliste.csv") %>% as.data.frame()
+
+library(readr)
+
+frekvens2 <- read_csv("alledata-frekvens2.txt") %>%
+  janitor::clean_names() %>%
+  as_tibble()
+
+frekvens2$species <- str_split(frekvens2$specieslist, ",")
+
+frekvens2 <- frekvens2 %>%
+  dplyr::select(-specieslist) %>%
+  unnest(species) %>%
+  mutate(species = str_trim(species, side = "both"),
+         species = str_remove_all(species, "\\}"),
+         site = str_remove_all(site, "\\{"),
+         species = as.numeric(species)) %>%
+  rename(ArtID = species) %>%
+  left_join(Artlist) %>%
+  dplyr::select("site", "plot", "year", "ArtID", "NavnDansk",
+                "LatArt", "LatFam", "LatOrd", "LatKla",
+                "LatDivision", "LatRige") %>% 
+  dplyr::filter(LatDivision %in% c("Anthocerophyta", "Bangiophyta", 
+"Charophyta", "Chlorophyta", "Cyanophyta", "Magnoliophyta", "Pinophyta", "Pteridophyta", "Xanthophyta"
+))  %>% dplyr::mutate(LatArt = str_replace_all(LatArt,"\xeb", "e"),
+                      NavnDansk = str_replace_all(NavnDansk,"\\<f8\\>", "\u00f8"),
+                      NavnDansk = str_replace_all(NavnDansk,"\\<e6\\>", "\u00e6"),
+                      NavnDansk = str_replace_all(NavnDansk,"\\<e5\\>", "\u00e"))
+```
+
+# Introduction 
+
+In this document we are characterizing the most common species in Denmark, in order to do that we are using data from NOVANA including `r prettyNum(nrow(frekvens2),big.mark = ".", decimal.mark = ",")` samples in `r prettyNum(length(unique(frekvens2$site)),big.mark = ".", decimal.mark = ",")` sites, and `r prettyNum(length(unique(frekvens2$plot)),big.mark = ".", decimal.mark = ",")` plots sampled from `r min(frekvens2$year)`, till `r max(frekvens2$year)`. This includes `r prettyNum(length(unique(frekvens2$LatArt)),big.mark = ".", decimal.mark = ",")` that have been sampled at least once.
+
+## Number of species per family
+
+The number of species per family in a decreasing order are as follows:
+
+```{r SpeciesPerFamily}
+## number of species per family
+
+PerFamily <- frekvens2 %>%
+  dplyr::select(LatArt, LatFam) %>%
+  distinct() %>%
+  group_by(LatFam) %>%
+  summarise(Species_number = n()) %>%
+  arrange(desc(Species_number)) %>%
+  rename(Family = LatFam)
+
+datatable(PerFamily, extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel'),
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+```
+## Number of species per Genus
+
+```{r SpeciesPerGenus}
+PerGenus <- frekvens2
+
+PerGenus$Genus <- str_split(frekvens2$LatArt," ", simplify = T)[,1] %>% str_trim() 
+
+PerGenus <- PerGenus %>%
+  dplyr::select(LatArt, Genus) %>%
+  distinct() %>%
+  group_by(Genus) %>%
+  summarise(Species_number = n()) %>%
+  arrange(desc(Species_number))
+
+
+datatable(PerGenus, extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel'),
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+```
+
+## Number of species per plot
+
+```{r SpeciesPerPlot}
+PerSpeciesPlot <- frekvens2 %>%
+  dplyr::select("site", "plot", "LatArt", "LatFam", "NavnDansk") %>%
+  distinct() %>%
+  group_by(LatArt, LatFam, NavnDansk) %>%
+  summarise(Ocurrences = n()) %>%
+  arrange(desc(Ocurrences)) %>% 
+  rename(Family = LatFam,
+         Species = LatArt,
+         Danish_name = NavnDansk)
+
+
+datatable(PerSpeciesPlot, extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel'),
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+```
+
+```{r plotlySpecies}
+
+PerSpeciesPlotlyAll <- PerSpeciesPlot %>% 
+  ungroup() %>% 
+  dplyr::select(Species, Family, Ocurrences) %>% 
+  mutate(Family = "All") %>% 
+  slice_max(order_by = Ocurrences, n = 100)
+
+TopFamilies <- PerFamily %>% 
+  ungroup() %>% 
+  slice_max(Species_number, n = 10) %>% 
+  pull(Family)
+
+PerSpeciesFamiliesPlotly <- PerSpeciesPlot %>% 
+  ungroup() %>% 
+  dplyr::select(Species, Family, Ocurrences) %>% 
+  dplyr::filter(Family %in% TopFamilies) %>% 
+ group_split(Family) %>% 
+  purrr::map(~slice_max(.x, order_by = Ocurrences, n = 100)) %>% 
+  purrr::reduce(bind_rows) %>% 
+  bind_rows(PerSpeciesPlotlyAll)
+
+FamNames <- PerSpeciesFamiliesPlotly$Family %>% unique() %>% sort()
+
+df <- PerSpeciesFamiliesPlotly
+```
+
+
+```{r ThePlot}
+library(plotly)
+
+plot_ly() %>%
+  add_trace(data = df[df$Family == FamNames[1],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar',
+            name = FamNames[1],
+            visible = T,
+            inherit = F) %>%
+  add_trace(data = df[df$Family == FamNames[2],]%>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[2],
+            visible = F,
+            inherit = F) %>%
+  add_trace(data = df[df$Family == FamNames[3],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[3],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[4],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[4],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[5],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[5],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[6],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[6],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[7],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[7],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[8],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[8],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[9],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[9],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[10],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[10],
+            visible = F,
+            inherit = F) %>%
+    add_trace(data = df[df$Family == FamNames[11],] %>% 
+              mutate(Species = fct_reorder(Species, desc(Ocurrences))), 
+            x = ~Species, 
+            y = ~Ocurrences, 
+            type = 'bar', 
+            name = FamNames[11],
+            visible = F,
+            inherit = F) %>%
+  layout(
+    xaxis = list(
+      nticks = 0,
+      showticklabels=F
+    ),
+    updatemenus = list(
+      list(y = .7,     
+           buttons = list(
+             list(method = "update",
+                  args = list(list(visible = c(T, F, F, F, F, F, F, F, F, F, F)),
+                              list(title = FamNames[1])),
+                  label = FamNames[1]),
+             list(method = "update",
+                  args = list(list(visible = c(F, T, F, F, F, F, F, F, F, F, F)),
+                              list(title = FamNames[2])),
+                  label = FamNames[2]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, T, F, F, F, F, F, F, F, F)),
+                              list(title = FamNames[3])),
+                  label = FamNames[3]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, T, F, F, F, F, F, F, F)),
+                              list(title = FamNames[4])),
+                  label = FamNames[4]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, F, T, F, F, F, F, F, F)),
+                              list(title = FamNames[5])),
+                  label = FamNames[5]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, F, F, T, F, F, F, F, F)),
+                              list(title = FamNames[6])),
+                  label = FamNames[6]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, F, F, F, T, F, F, F, F)),
+                              list(title = FamNames[7])),
+                  label = FamNames[7]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, F, F, F, F, T, F, F, F)),
+                              list(title = FamNames[8])),
+                  label = FamNames[8]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, F, F, F, F, F, T, F, F)),
+                              list(title = FamNames[9])),
+                  label = FamNames[9]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, F, F, F, F, F, F, T, F)),
+                              list(title = FamNames[10])),
+                  label = FamNames[10]),
+             list(method = "update",
+                  args = list(list(visible = c(F, F, F, F, F, F, F, F, F, F, T)),
+                              list(title = FamNames[11])),
+                  label = FamNames[11])
+           )))
+  )
+
+```
+
+
+
+## Number of plots per habitat type
+
+```{r HabitatType}
+### Model habitat type
+
+Sites <- data.table::fread("/home/derek/Documents/denmark_stratification/Novana/alledata-abiotiske.csv") %>%
+  as.data.frame() %>%
+  dplyr::select("site", "plot", "year", "UTMx", "UTMy", "sekhabtype") %>%
+  mutate(site = as.character(site)) %>%
+  left_join(frekvens2)
+
+
+ForModel <- Sites %>%
+  dplyr::select("sekhabtype","LatArt")
+
+
+
+ForModel %>% dplyr::group_by(sekhabtype) %>% summarise(n = n()) %>% dplyr::arrange(desc(n)) %>% datatable(extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel'),
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+
+```
+
